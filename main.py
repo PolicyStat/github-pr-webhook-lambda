@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 import os
@@ -16,13 +17,14 @@ logger.setLevel(logging.DEBUG)
 app = Flask(__name__)
 
 
-HIPCHAT_MSG_API_ENDPOINT = os.environ['HIPCHAT_MSG_API_ENDPOINT']
-HIPCHAT_API_TOKEN = os.environ['HIPCHAT_API_TOKEN']
-SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+HIPCHAT_MSG_API_ENDPOINT = str(os.environ['HIPCHAT_MSG_API_ENDPOINT'])
+HIPCHAT_API_TOKEN = str(os.environ['HIPCHAT_API_TOKEN'])
+SNS_TOPIC_ARN = str(os.environ['SNS_TOPIC_ARN'])
+GITHUB_SECRET_TOKEN = str(os.environ.get('GITHUB_SECRET_TOKEN', ''))
 
 
 @app.route('/', methods=['GET', 'POST'])
-def handle_pull_request_event():
+def handle_incoming_github_event():
     if request.method != 'POST':
         return 'no'
 
@@ -32,6 +34,8 @@ def handle_pull_request_event():
 
     if event_type != 'pull_request':
         return 'no'
+
+    verify_signature(request)
 
     # Gather data
     try:
@@ -45,10 +49,34 @@ def handle_pull_request_event():
         abort(400)
 
     message = generate_message(event)
+    logger.info(f'Generated message: {message}')
     if message:
+        logger.info('Sending to hipchat')
         send_hipchat_message(message)
 
     return 'ok'
+
+
+def verify_signature(request):
+    if not GITHUB_SECRET_TOKEN:
+        logger.warning('Security token not specified. This is very insecure!')
+        return
+
+    hash_signature = request.headers.get('X-Hub-Signature', None)
+    if not hash_signature:
+        logger.error('Header X-Hub-Signature was missing and it is required')
+        abort(400)
+    if not hash_signature.startswith('sha1='):
+        logger.error('Header X-Hub-Signature is not formatted correctly')
+        abort(400)
+    expected_digest = hash_signature[len('sha1='):]
+    actual_digest = hmac.new(GITHUB_SECRET_TOKEN.encode(), request.data, digestmod='sha1')
+    if not hmac.compare_digest(actual_digest.hexdigest(), expected_digest):
+        logger.error(
+            'Actual digest does not match signature. '
+            'Make sure you are using the correct token.'
+        )
+        abort(400)
 
 
 def generate_message(event):
