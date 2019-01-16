@@ -1,0 +1,17 @@
+main:
+  apigateway_enabled: true
+  app_function: main.app
+  aws_region: us-east-1
+  delete_local_zip: true
+  exception_handler: main.unhandled_exceptions
+  keep_warm: false
+  log_level: DEBUG
+  memory_size: 128
+  num_retained_versions: 10
+  project_name: github-merged-prs
+  runtime: python3.6
+  s3_bucket: pstat-zappa-deploys-tpzx4bbln
+  timeout_seconds: 60
+  exclude:
+    - .env
+    - local.env
