@@ -6,8 +6,12 @@ import sys
 import traceback
 
 import boto3
+import gspread
 import requests
 from flask import Flask, request, abort
+from oauth2client import crypt
+from oauth2client.client import HttpAccessTokenRefreshError
+from oauth2client.service_account import ServiceAccountCredentials
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,6 +25,13 @@ HIPCHAT_MSG_API_ENDPOINT = str(os.environ['HIPCHAT_MSG_API_ENDPOINT'])
 HIPCHAT_API_TOKEN = str(os.environ['HIPCHAT_API_TOKEN'])
 SNS_TOPIC_ARN = str(os.environ['SNS_TOPIC_ARN'])
 GITHUB_SECRET_TOKEN = str(os.environ.get('GITHUB_SECRET_TOKEN', ''))
+DEV_DASHBOARD_CLIENT_EMAIL = str(os.environ.get('DEV_DASHBOARD_CLIENT_EMAIL', ''))
+DEV_DASHBOARD_PRIVATE_KEY = str(
+    os.environ.get('DEV_DASHBOARD_PRIVATE_KEY', '')).replace('\\n', '\n')
+DEV_DASHBOARD_WORKBOOK = str(os.environ.get('DEV_DASHBOARD_WORKBOOK', ''))
+DEV_DASHBOARD_SHEET_NAME = str(os.environ.get('DEV_DASHBOARD_SHEET_NAME', ''))
+DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME = str(
+    os.environ.get('DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME', ''))
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -54,6 +65,8 @@ def handle_incoming_github_event():
         logger.info('Sending to hipchat')
         send_hipchat_message(message)
 
+    update_spreadsheet(event)
+
     return 'ok'
 
 
@@ -77,6 +90,58 @@ def verify_signature(request):
             'Make sure you are using the correct token.'
         )
         abort(400)
+
+
+def update_spreadsheet(event):
+    if event['action'] != 'closed' or not event['pull_request']['merged']:
+        return
+
+    pr = event['pull_request']
+
+    merged_at = pr['merged_at'].replace('T', ' ').rstrip('Z')
+    pr_url = pr['html_url']
+    merged_by = pr['merged_by']['login']
+    new_row = [merged_at, pr_url, merged_by]
+
+    if not all(new_row):
+        logger.error(f'Some meta data is missing: {new_row}')
+        return
+
+    scopes = [
+        'https://spreadsheets.google.com/feeds',
+        'https://www.googleapis.com/auth/drive',
+    ]
+
+    signer = crypt.Signer.from_string(DEV_DASHBOARD_PRIVATE_KEY)
+    credentials = ServiceAccountCredentials(
+        service_account_email=DEV_DASHBOARD_CLIENT_EMAIL,
+        signer=signer,
+        scopes=scopes,
+    )
+
+    try:
+        gc = gspread.authorize(credentials)
+    except HttpAccessTokenRefreshError:
+        logger.error('Invalid credentials')
+        return
+
+    try:
+        book = gc.open(DEV_DASHBOARD_WORKBOOK)
+    except gspread.exceptions.SpreadsheetNotFound:
+        logger.error(f'Could not find workbook named {DEV_DASHBOARD_WORKBOOK}')
+        return
+
+    display_name = get_gh_login_display_name_mapping(book, merged_by)
+    new_row = [merged_at, pr_url, display_name]
+
+    sheet = book.worksheet(DEV_DASHBOARD_SHEET_NAME)
+    sheet.insert_row(new_row, index=2, value_input_option='USER_ENTERED')
+
+
+def get_gh_login_display_name_mapping(book, gh_login):
+    sheet = book.worksheet(DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME)
+    mapping = dict(zip(sheet.col_values(1), sheet.col_values(2)))
+    return mapping.get(gh_login, gh_login)
 
 
 def generate_message(event):
