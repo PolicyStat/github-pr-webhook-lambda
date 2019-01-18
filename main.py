@@ -110,8 +110,9 @@ def get_contributors(repo_owner, repo_name, pr_num):
         author = c.commit.author['name']
         committer = c.commit.committer['name']
         if author != committer:
-            # Skip cherry-picks
-            continue
+            # Skip cherry-picks unless the committer is Github
+            if committer != 'GitHub':
+                continue
         contributors.add(author)
     return contributors
 
