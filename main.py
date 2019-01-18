@@ -4,6 +4,8 @@ import logging
 import os
 import sys
 import traceback
+from datetime import datetime
+from operator import itemgetter
 
 import boto3
 import github3
@@ -65,13 +67,14 @@ def handle_incoming_github_event():
         logger.error('No event to process. Make sure the content-type is json')
         abort(400)
 
-    message = generate_message(event)
-    logger.info(f'Generated message: {message}')
+    message = create_pr_action_message(event)
+    logger.info(f'Created message: {message}')
     if message:
         logger.info('Sending to hipchat')
         send_hipchat_message(message)
 
-    update_spreadsheet(event)
+    if gh_event_is_merged_pr(event):
+        handle_merged_pr(event)
 
     return 'ok'
 
@@ -96,6 +99,12 @@ def verify_signature(request):
             'Make sure you are using the correct token.'
         )
         abort(400)
+
+
+def gh_event_is_merged_pr(event):
+    if event['action'] != 'closed':
+        return False
+    return event['pull_request']['merged']
 
 
 def get_contributors(repo_owner, repo_name, pr_num):
@@ -144,10 +153,73 @@ def get_workbook():
     return book
 
 
-def update_spreadsheet(event):
-    if event['action'] != 'closed' or not event['pull_request']['merged']:
+def handle_merged_pr(event):
+    book = get_workbook()
+    if not book:
         return
 
+    update_spreadsheet(book, event)
+    display_current_contributions(book)
+
+
+def display_current_contributions(book):
+    sheet = book.worksheet('Contributions')
+    now = datetime.utcnow()
+
+    year, month = str(now.year), now.strftime('%b')
+    first_col = [v.strip() for v in sheet.col_values(1)]
+
+    try:
+        year_row = first_col.index(year)
+    except IndexError:
+        logger.error(f'Could not find a row containing {year}')
+
+    first_row = [v.strip() for v in sheet.row_values(1)]
+
+    try:
+        month_col = first_row.index(month)
+    except IndexError:
+        logger.error(f'Could not find a column containing {month}')
+
+    try:
+        total_col = first_row.index('Total')
+    except IndexError:
+        logger.error(f'Could not find a column containing Total')
+
+    keys = []
+    for r in first_col[year_row:]:
+        if not r:
+            break
+        keys.append(r.split(' ')[0])
+
+    year_total_values = [
+        int(cell.value)
+        for cell in sheet.range(year_row+1, total_col+1, year_row+len(keys), total_col+1)
+    ]
+
+    month_total_values = [
+        int(cell.value)
+        for cell in sheet.range(year_row+1, month_col+1, year_row+len(keys), month_col+1)
+    ]
+
+    all_totals = list(zip(keys, month_total_values, year_total_values))
+    _, month_total, year_total = all_totals.pop(0)
+
+    contributions = [
+        f'{key} {month_value}/{year_value}'
+        for key, month_value, year_value in
+        sorted(all_totals, key=itemgetter(1), reverse=True)
+    ]
+    url = f'https://docs.google.com/spreadsheets/d/{book.id}'
+    message = [
+        f'<a href="{url}">Contributions</a> '
+        f'for {month}/{year}: {month_total}/{year_total}<br>',
+    ]
+    message.append(' ~ '.join(contributions))
+    send_hipchat_message(''.join(message))
+
+
+def update_spreadsheet(book, event):
     pr = event['pull_request']
 
     merged_at = pr['merged_at'].replace('T', ' ').rstrip('Z')
@@ -156,10 +228,6 @@ def update_spreadsheet(event):
 
     if not all([merged_at, pr_url, merged_by]):
         logger.error(f'Some meta data is missing')
-        return
-
-    book = get_workbook()
-    if not book:
         return
 
     contributors = get_contributors(
@@ -187,7 +255,7 @@ def get_gh_login_display_name_mapping(book, gh_login):
     return mapping.get(gh_login, gh_login)
 
 
-def generate_message(event):
+def create_pr_action_message(event):
     action = event['action']
     if action not in ['opened', 'closed', 'reopened']:
         return
