@@ -65,8 +65,8 @@ def handle_incoming_github_event():
         logger.error('No event to process. Make sure the content-type is json')
         abort(400)
 
-    message = generate_message(event)
-    logger.info(f'Generated message: {message}')
+    message = create_pr_action_message(event)
+    logger.info(f'Created message: {message}')
     if message:
         logger.info('Sending to hipchat')
         send_hipchat_message(message)
@@ -96,6 +96,12 @@ def verify_signature(request):
             'Make sure you are using the correct token.'
         )
         abort(400)
+
+
+def gh_event_is_merged_pr(event):
+    if event['action'] != 'closed':
+        return False
+    return event['pull_request']['merged']
 
 
 def get_contributors(repo_owner, repo_name, pr_num):
@@ -145,7 +151,7 @@ def get_workbook():
 
 
 def update_spreadsheet(event):
-    if event['action'] != 'closed' or not event['pull_request']['merged']:
+    if not gh_event_is_merged_pr(event):
         return
 
     pr = event['pull_request']
@@ -187,7 +193,7 @@ def get_gh_login_display_name_mapping(book, gh_login):
     return mapping.get(gh_login, gh_login)
 
 
-def generate_message(event):
+def create_pr_action_message(event):
     action = event['action']
     if action not in ['opened', 'closed', 'reopened']:
         return
