@@ -6,6 +6,7 @@ import sys
 import traceback
 
 import boto3
+import github3
 import gspread
 import requests
 from flask import Flask, request, abort
@@ -21,17 +22,22 @@ logger.setLevel(logging.DEBUG)
 app = Flask(__name__)
 
 
-HIPCHAT_MSG_API_ENDPOINT = str(os.environ['HIPCHAT_MSG_API_ENDPOINT'])
-HIPCHAT_API_TOKEN = str(os.environ['HIPCHAT_API_TOKEN'])
-SNS_TOPIC_ARN = str(os.environ['SNS_TOPIC_ARN'])
-GITHUB_SECRET_TOKEN = str(os.environ.get('GITHUB_SECRET_TOKEN', ''))
-DEV_DASHBOARD_CLIENT_EMAIL = str(os.environ.get('DEV_DASHBOARD_CLIENT_EMAIL', ''))
-DEV_DASHBOARD_PRIVATE_KEY = str(
-    os.environ.get('DEV_DASHBOARD_PRIVATE_KEY', '')).replace('\\n', '\n')
-DEV_DASHBOARD_WORKBOOK = str(os.environ.get('DEV_DASHBOARD_WORKBOOK', ''))
-DEV_DASHBOARD_SHEET_NAME = str(os.environ.get('DEV_DASHBOARD_SHEET_NAME', ''))
-DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME = str(
-    os.environ.get('DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME', ''))
+def _read_env(name):
+    return str(os.environ[name])
+
+
+HIPCHAT_MSG_API_ENDPOINT = _read_env('HIPCHAT_MSG_API_ENDPOINT')
+HIPCHAT_API_TOKEN = _read_env('HIPCHAT_API_TOKEN')
+SNS_TOPIC_ARN = _read_env('SNS_TOPIC_ARN')
+GITHUB_SECRET_TOKEN = _read_env('GITHUB_SECRET_TOKEN')
+DEV_DASHBOARD_CLIENT_EMAIL = _read_env('DEV_DASHBOARD_CLIENT_EMAIL')
+DEV_DASHBOARD_PRIVATE_KEY = _read_env('DEV_DASHBOARD_PRIVATE_KEY').replace('\\n', '\n')
+DEV_DASHBOARD_WORKBOOK = _read_env('DEV_DASHBOARD_WORKBOOK')
+DEV_DASHBOARD_SHEET_NAME = _read_env('DEV_DASHBOARD_SHEET_NAME')
+DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME = _read_env(
+    'DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME')
+GITHUB_API_TOKEN = _read_env('GITHUB_API_TOKEN')
+GITHUB_API_USER = _read_env('GITHUB_API_USER')
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -92,21 +98,25 @@ def verify_signature(request):
         abort(400)
 
 
-def update_spreadsheet(event):
-    if event['action'] != 'closed' or not event['pull_request']['merged']:
-        return
+def get_contributors(repo_owner, repo_name, pr_num):
+    gh = github3.login(GITHUB_API_USER, GITHUB_API_TOKEN)
+    pr = gh.pull_request(repo_owner, repo_name, pr_num)
+    contributors = set()
+    commits = list(pr.commits())
+    for c in commits:
+        if c.message.startswith('Merged branch'):
+            # skip merges
+            continue
+        author = c.commit.author['name']
+        committer = c.commit.committer['name']
+        if author != committer:
+            # Skip cherry-picks
+            continue
+        contributors.add(author)
+    return contributors
 
-    pr = event['pull_request']
 
-    merged_at = pr['merged_at'].replace('T', ' ').rstrip('Z')
-    pr_url = pr['html_url']
-    merged_by = pr['merged_by']['login']
-    new_row = [merged_at, pr_url, merged_by]
-
-    if not all(new_row):
-        logger.error(f'Some meta data is missing: {new_row}')
-        return
-
+def get_workbook():
     scopes = [
         'https://spreadsheets.google.com/feeds',
         'https://www.googleapis.com/auth/drive',
@@ -130,9 +140,41 @@ def update_spreadsheet(event):
     except gspread.exceptions.SpreadsheetNotFound:
         logger.error(f'Could not find workbook named {DEV_DASHBOARD_WORKBOOK}')
         return
+    return book
+
+
+def update_spreadsheet(event):
+    if event['action'] != 'closed' or not event['pull_request']['merged']:
+        return
+
+    pr = event['pull_request']
+
+    merged_at = pr['merged_at'].replace('T', ' ').rstrip('Z')
+    pr_url = pr['html_url']
+    merged_by = pr['merged_by']['login']
+
+    if not all([merged_at, pr_url, merged_by]):
+        logger.error(f'Some meta data is missing')
+        return
+
+    book = get_workbook()
+    if not book:
+        return
+
+    contributors = get_contributors(
+        repo_owner=event['repository']['owner']['login'],
+        repo_name=event['repository']['name'],
+        pr_num=pr['number'],
+    )
 
     display_name = get_gh_login_display_name_mapping(book, merged_by)
-    new_row = [merged_at, pr_url, display_name]
+    new_row = [
+        merged_at,
+        pr_url,
+        display_name,
+        '', '',
+        '; '.join(sorted(contributors)),
+    ]
 
     sheet = book.worksheet(DEV_DASHBOARD_SHEET_NAME)
     sheet.insert_row(new_row, index=2, value_input_option='USER_ENTERED')
