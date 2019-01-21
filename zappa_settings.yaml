@@ -14,4 +14,5 @@ main:
   timeout_seconds: 60
   exclude:
     - .env
-    - local.env
+    - .deploy
+    - botocore
