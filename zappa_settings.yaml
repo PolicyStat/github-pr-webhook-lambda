@@ -4,7 +4,8 @@ main:
   aws_region: us-east-1
   delete_local_zip: true
   exception_handler: main.unhandled_exceptions
-  keep_warm: false
+  keep_warm: true
+  keep_warm_expression: rate(5 minutes)
   log_level: DEBUG
   memory_size: 128
   num_retained_versions: 10
