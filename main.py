@@ -296,7 +296,7 @@ def send_hipchat_message(message):
     )
 
 
-def send_sns_message(subject, message, subject_prefix='[AWS Item Monitor]'):
+def send_sns_message(subject, message, subject_prefix='[AWS GH PR Webhook]'):
     full_subject = f'{subject_prefix} {subject}'
     logger.info(f'send_sns_message: {full_subject}\n{message}')
     topic_arn = SNS_TOPIC_ARN
