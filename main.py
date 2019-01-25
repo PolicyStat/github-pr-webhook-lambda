@@ -2,6 +2,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -297,6 +298,9 @@ def send_hipchat_message(message):
 
 
 def send_sns_message(subject, message, subject_prefix='[AWS GH PR Webhook]'):
+    # remove any characters that aren't allowed
+    subject = re.sub('[^a-zA-Z0-9-]+', ' ', subject)
+
     full_subject = f'{subject_prefix} {subject}'
     logger.info(f'send_sns_message: {full_subject}\n{message}')
     topic_arn = SNS_TOPIC_ARN
@@ -304,8 +308,8 @@ def send_sns_message(subject, message, subject_prefix='[AWS GH PR Webhook]'):
         logger.warning('Unable to send message because SNS_TOPIC_ARN is not set')
         return
 
-    # subject cannot exceed 100 characters
-    limited_subject = full_subject[:100]
+    # subject must be < 100 characters
+    limited_subject = full_subject[:99].strip()
 
     sns = boto3.client('sns')
     sns.publish(TopicArn=topic_arn, Message=message, Subject=limited_subject)
@@ -327,7 +331,12 @@ def unhandled_exceptions(exception, event, context):
     logger = logging.getLogger(__name__)
     exc_name_and_value, exc_stacktrace = get_current_exception_info()
 
-    subject = f'Unhandled exception: {exc_name_and_value}'
+    # Some exception messages are across multiple lines
+    # If this is the case, only use the first line
+    exc_lines = exc_name_and_value.split('\n', 1)
+    exception_subject = exc_lines[0].strip()
+
+    subject = f'Unhandled exception: {exception_subject}'
     message = f'''
 {exc_stacktrace}
 Event:
