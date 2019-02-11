@@ -1,7 +1,6 @@
 import hmac
 import json
 import logging
-import os
 import re
 import sys
 import traceback
@@ -12,6 +11,7 @@ import boto3
 import github3
 import gspread
 import requests
+from environs import Env
 from flask import Flask, request, abort
 from oauth2client import crypt
 from oauth2client.client import HttpAccessTokenRefreshError
@@ -25,22 +25,33 @@ logger.setLevel(logging.DEBUG)
 app = Flask(__name__)
 
 
-def _read_env(name):
-    return str(os.environ[name])
+env = Env()
+env.read_env()
 
 
-HIPCHAT_MSG_API_ENDPOINT = _read_env('HIPCHAT_MSG_API_ENDPOINT')
-HIPCHAT_API_TOKEN = _read_env('HIPCHAT_API_TOKEN')
-SNS_TOPIC_ARN = _read_env('SNS_TOPIC_ARN')
-GITHUB_SECRET_TOKEN = _read_env('GITHUB_SECRET_TOKEN')
-DEV_DASHBOARD_CLIENT_EMAIL = _read_env('DEV_DASHBOARD_CLIENT_EMAIL')
-DEV_DASHBOARD_PRIVATE_KEY = _read_env('DEV_DASHBOARD_PRIVATE_KEY').replace('\\n', '\n')
-DEV_DASHBOARD_WORKBOOK = _read_env('DEV_DASHBOARD_WORKBOOK')
-DEV_DASHBOARD_SHEET_NAME = _read_env('DEV_DASHBOARD_SHEET_NAME')
-DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME = _read_env(
-    'DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME')
-GITHUB_API_TOKEN = _read_env('GITHUB_API_TOKEN')
-GITHUB_API_USER = _read_env('GITHUB_API_USER')
+@env.parser_for('pgp')
+def pgp_parser(value):
+    if value:
+        return value.replace('\\n', '\n')
+
+
+SNS_TOPIC_ARN = env('SNS_TOPIC_ARN')
+
+with env.prefixed('HIPCHAT_'):
+    HIPCHAT_MSG_API_ENDPOINT = env('MSG_API_ENDPOINT')
+    HIPCHAT_API_TOKEN = env('API_TOKEN')
+
+with env.prefixed('DEV_DASHBOARD_'):
+    DEV_DASHBOARD_CLIENT_EMAIL = env('CLIENT_EMAIL')
+    DEV_DASHBOARD_PRIVATE_KEY = env.pgp('PRIVATE_KEY')
+    DEV_DASHBOARD_WORKBOOK = env('WORKBOOK')
+    DEV_DASHBOARD_SHEET_NAME = env('SHEET_NAME')
+    DEV_DASHBOARD_GH_LOGIN_LOOKUP_SHEET_NAME = env('GH_LOGIN_LOOKUP_SHEET_NAME')
+
+with env.prefixed('GITHUB_'):
+    GITHUB_SECRET_TOKEN = env('SECRET_TOKEN')
+    GITHUB_API_TOKEN = env('API_TOKEN')
+    GITHUB_API_USER = env('API_USER')
 
 
 @app.route('/', methods=['GET', 'POST'])
