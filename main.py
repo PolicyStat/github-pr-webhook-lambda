@@ -36,10 +36,7 @@ def pgp_parser(value):
 
 
 SNS_TOPIC_ARN = env('SNS_TOPIC_ARN')
-
-with env.prefixed('HIPCHAT_'):
-    HIPCHAT_MSG_API_ENDPOINT = env('MSG_API_ENDPOINT')
-    HIPCHAT_API_TOKEN = env('API_TOKEN')
+SLACK_API_ENDPOINT = env('SLACK_API_ENDPOINT')
 
 with env.prefixed('DEV_DASHBOARD_'):
     DEV_DASHBOARD_CLIENT_EMAIL = env('CLIENT_EMAIL')
@@ -82,8 +79,8 @@ def handle_incoming_github_event():
     message = create_pr_action_message(event)
     logger.info(f'Created message: {message}')
     if message:
-        logger.info('Sending to hipchat')
-        send_hipchat_message(message)
+        logger.info('Posting to Slack')
+        post_slack_message(message)
 
     if gh_event_is_merged_pr(event):
         handle_merged_pr(event)
@@ -224,11 +221,11 @@ def display_current_contributions(book):
     ]
     url = f'https://docs.google.com/spreadsheets/d/{book.id}'
     message = [
-        f'<a href="{url}">Contributions</a> '
+        f'<{url}|Contributions> '
         f'for {month}/{year}: {month_total}/{year_total}<br>',
     ]
     message.append(' ~ '.join(contributions))
-    send_hipchat_message(''.join(message))
+    post_slack_message(''.join(message))
 
 
 def update_spreadsheet(book, event):
@@ -284,28 +281,19 @@ def create_pr_action_message(event):
     pr_title = event['pull_request']['title']
 
     message = f'''
-<a href="{sender_url}">{sender_name}</a> {action}
-#<a href="{pr_url}">{pr_num}</a> on
-<a href="{repo_url}">{repo_name}</a>: {pr_title}
+<{sender_url}|{sender_name}> {action}
+#<{pr_url}|{pr_num}> on
+<{repo_url}|{repo_name}>: {pr_title}
 '''
     return message
 
 
-def send_hipchat_message(message):
-    payload = {
-        'color': 'yellow',
-        'message': message,
-    }
-    headers = {
-        'Authorization': 'Bearer {}'.format(HIPCHAT_API_TOKEN),
-        'Content-Type': 'application/json',
-    }
-    return requests.post(
-        HIPCHAT_MSG_API_ENDPOINT,
-        headers=headers,
-        timeout=5,
-        data=json.dumps(payload),
-    )
+def test_message():
+    post_slack_message('<http://google.com|Bar>')
+
+
+def post_slack_message(message):
+    requests.post(SLACK_API_ENDPOINT, timeout=5, json=dict(text=message))
 
 
 def send_sns_message(subject, message, subject_prefix='[AWS GH PR Webhook]'):
