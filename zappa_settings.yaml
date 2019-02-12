@@ -2,7 +2,7 @@ main:
   apigateway_enabled: true
   app_function: main.app
   aws_region: us-east-1
-  delete_local_zip: true
+  delete_local_zip: false
   exception_handler: main.unhandled_exceptions
   keep_warm: true
   keep_warm_expression: rate(5 minutes)
@@ -16,4 +16,5 @@ main:
   exclude:
     - .env
     - .deploy
+    - .direnv
     - botocore
