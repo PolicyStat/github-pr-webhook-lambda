@@ -222,10 +222,10 @@ def display_current_contributions(book):
     url = f'https://docs.google.com/spreadsheets/d/{book.id}'
     message = [
         f'<{url}|Contributions> '
-        f'for {month}/{year}: {month_total}/{year_total}<br>',
+        f'for {month}/{year}: {month_total}/{year_total}',
     ]
     message.append(' ~ '.join(contributions))
-    post_slack_message(''.join(message))
+    post_slack_message('\n'.join(message))
 
 
 def update_spreadsheet(book, event):
@@ -280,11 +280,11 @@ def create_pr_action_message(event):
     pr_url = event['pull_request']['html_url']
     pr_title = event['pull_request']['title']
 
-    message = f'''
-<{sender_url}|{sender_name}> {action}
-#<{pr_url}|{pr_num}> on
-<{repo_url}|{repo_name}>: {pr_title}
-'''
+    message = (
+        f'<{sender_url}|{sender_name}> '
+        f'{action} #<{pr_url}|{pr_num}> on '
+        f'<{repo_url}|{repo_name}>: {pr_title}'
+    )
     return message
 
 
