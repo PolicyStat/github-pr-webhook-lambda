@@ -16,6 +16,8 @@ from flask import Flask, request, abort
 from oauth2client import crypt
 from oauth2client.client import HttpAccessTokenRefreshError
 from oauth2client.service_account import ServiceAccountCredentials
+from zappa.async import run
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,6 +78,11 @@ def handle_incoming_github_event():
         logger.error('No event to process. Make sure the content-type is json')
         abort(400)
 
+    run(process_event, [event])
+    return 'ok'
+
+
+def process_event(event):
     message = create_pr_action_message(event)
     logger.info(f'Created message: {message}')
     if message:
@@ -84,8 +91,6 @@ def handle_incoming_github_event():
 
     if gh_event_is_merged_pr(event):
         handle_merged_pr(event)
-
-    return 'ok'
 
 
 def verify_signature(request):
