@@ -2,6 +2,7 @@ import hmac
 import json
 import logging
 import re
+import subprocess
 import sys
 import traceback
 from datetime import datetime
@@ -37,6 +38,7 @@ def pgp_parser(value):
         return value.replace('\\n', '\n')
 
 
+S3_DEPLOYMENT_BUCKET = env('S3_DEPLOYMENT_BUCKET')
 SNS_TOPIC_ARN = env('SNS_TOPIC_ARN')
 SLACK_API_ENDPOINT = env('SLACK_API_ENDPOINT')
 
@@ -51,6 +53,7 @@ with env.prefixed('GITHUB_'):
     GITHUB_SECRET_TOKEN = env('SECRET_TOKEN')
     GITHUB_API_TOKEN = env('API_TOKEN')
     GITHUB_API_USER = env('API_USER')
+    GITHUB_REPO_CREATE_RELEASE_TAG = env('REPO_CREATE_RELEASE_TAG')
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -90,7 +93,105 @@ def process_event(event):
         post_slack_message(message)
 
     if gh_event_is_merged_pr(event):
+        repo_id = str(event['repository']['id'])
+        if repo_id == GITHUB_REPO_CREATE_RELEASE_TAG:
+            run(create_release_tag_and_upload_s3_archive, [repo_id])
         handle_merged_pr(event)
+
+
+def _get_final_minor_version():
+    s3_client = boto3.client('s3')
+    params = dict(Bucket=S3_DEPLOYMENT_BUCKET, Key='final_minor_version')
+    try:
+        obj = s3_client.get_object(**params)
+    except s3_client.exceptions.ClientError:
+        return
+    return obj['Body'].read().decode('utf-8').strip()
+
+
+def get_next_release_tag_name(tag_name):
+    m = re.match(r'v(\d+)\.(\d+)\.(\d+).*', tag_name.strip())
+    major, minor, patch = [int(v) for v in m.groups()]
+    # TODO - handle major version increase
+    final_minor_version = _get_final_minor_version()
+    if tag_name == final_minor_version:
+        logger.info('Detected that minor version needs to be increased')
+        patch = 0
+        minor += 1
+    else:
+        patch += 1
+    next_tag_name = f'v{major:02}.{minor:02}.{patch:02}'
+    return next_tag_name
+
+
+def create_release_tag_and_upload_s3_archive(repo_id):
+    gh = github_auth()
+    repo = gh.repository_with_id(repo_id)
+    post_slack_message(f'Creating release tag and uploading S3 archive for {repo.full_name}')
+
+    latest_commit = next(repo.commits(number=1))
+    latest_tag = next(repo.tags(number=1))
+    logger.info(f'latest_commit={latest_commit.sha} latest_tag={latest_tag.name}')
+
+    if latest_tag.commit.sha == latest_commit.sha:
+        message = 'Latest commit is already tagged'
+        logger.error(message)
+        post_slack_message(message)
+        return
+
+    new_tag_name = get_next_release_tag_name(latest_tag.name)
+    logger.info(f'new_tag_name={new_tag_name}')
+
+    repo_archive = '/tmp/repo-archive.tar.gz'
+    extracted_dir = '/tmp/extracted'
+    repacked_archive = '/tmp/release.tar.gz'
+
+    archive_created = repo.archive('tarball', repo_archive, latest_commit.sha)
+    if not archive_created:
+        message = 'Failed to download/create archive from github'
+        logger.error(message)
+        post_slack_message(message)
+        return
+
+    # The archive that github creates has an inner root directory that we need to strip out
+    # and then repackage the archive
+
+    subprocess.run(['mkdir', extracted_dir])
+    subprocess.run([
+            'tar',
+            '-xzf', repo_archive,
+            '--strip-components=1',
+            '-C', extracted_dir,
+        ],
+        check=True,
+    )
+
+    subprocess.run([
+            'tar',
+            '-czf', repacked_archive,
+            '-C', extracted_dir,
+            '.',  # add the entire directory under extracted_dir
+        ],
+        check=True,
+    )
+
+    s3_client = boto3.client('s3')
+    params = dict(
+        Bucket=S3_DEPLOYMENT_BUCKET,
+        Key=f'releases/{new_tag_name}',
+    )
+    with open(repacked_archive, 'rb') as f:
+        s3_client.put_object(Body=f, **params)
+
+    repo.create_tag(
+        new_tag_name,
+        message='',
+        sha=latest_commit.sha,
+        obj_type='commit',
+        tagger='',
+        lightweight=True,
+    )
+    post_slack_message('Deployment release has been created')
 
 
 def verify_signature(request):
@@ -122,7 +223,7 @@ def gh_event_is_merged_pr(event):
 
 
 def get_contributors(repo_owner, repo_name, pr_num):
-    gh = github3.login(GITHUB_API_USER, GITHUB_API_TOKEN)
+    gh = github_auth()
     pr = gh.pull_request(repo_owner, repo_name, pr_num)
     contributors = set()
     commits = list(pr.commits())
@@ -291,6 +392,14 @@ def create_pr_action_message(event):
         f'<{repo_url}|{repo_name}>: {pr_title}'
     )
     return message
+
+
+def github_auth():
+    return github3.login(GITHUB_API_USER, GITHUB_API_TOKEN)
+
+
+def test_create_release():
+    create_release_tag_and_upload_s3_archive(GITHUB_REPO_CREATE_RELEASE_TAG)
 
 
 def test_message():
