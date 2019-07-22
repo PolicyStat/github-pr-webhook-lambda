@@ -2,7 +2,6 @@ import hmac
 import json
 import logging
 import re
-import subprocess
 import sys
 import traceback
 from datetime import datetime
@@ -127,11 +126,21 @@ def get_next_release_tag_name(tag_name):
 def create_release_tag_and_upload_s3_archive(repo_id):
     gh = github_auth()
     repo = gh.repository_with_id(repo_id)
-    post_slack_message(f'Creating release tag and uploading S3 archive for {repo.full_name}')
 
     latest_commit = next(repo.commits(number=1))
     latest_tag = next(repo.tags(number=1))
-    logger.info(f'latest_commit={latest_commit.sha} latest_tag={latest_tag.name}')
+
+    # latest_commit is expected to be a merge commit. merge commits always have two parents
+    # the first commit is what the original head was, before the merge
+    # the second commit is the head that was merged in
+    original_head_commit, merged_commit = latest_commit.parents
+    # we don't need to do anything with original_head_commit. It's named so it is known
+    merged_commit_sha = merged_commit['sha']
+
+    logger.info(
+        f'latest_commit={latest_commit.sha} latest_tag={latest_tag.name} '
+        f'merged_commit_sha={merged_commit_sha}'
+    )
 
     if latest_tag.commit.sha == latest_commit.sha:
         message = 'Latest commit is already tagged'
@@ -142,46 +151,15 @@ def create_release_tag_and_upload_s3_archive(repo_id):
     new_tag_name = get_next_release_tag_name(latest_tag.name)
     logger.info(f'new_tag_name={new_tag_name}')
 
-    repo_archive = '/tmp/repo-archive.tar.gz'
-    extracted_dir = '/tmp/extracted'
-    repacked_archive = '/tmp/release.tar.gz'
-
-    archive_created = repo.archive('tarball', repo_archive, latest_commit.sha)
-    if not archive_created:
-        message = 'Failed to download/create archive from github'
-        logger.error(message)
-        post_slack_message(message)
-        return
-
-    # The archive that github creates has an inner root directory that we need to strip out
-    # and then repackage the archive
-
-    subprocess.run(['mkdir', extracted_dir])
-    subprocess.run([
-            'tar',
-            '-xzf', repo_archive,
-            '--strip-components=1',
-            '-C', extracted_dir,
-        ],
-        check=True,
-    )
-
-    subprocess.run([
-            'tar',
-            '-czf', repacked_archive,
-            '-C', extracted_dir,
-            '.',  # add the entire directory under extracted_dir
-        ],
-        check=True,
-    )
-
     s3_client = boto3.client('s3')
-    params = dict(
+    s3_client.copy_object(
         Bucket=S3_DEPLOYMENT_BUCKET,
         Key=f'releases/{new_tag_name}',
+        CopySource=dict(
+            Bucket=S3_DEPLOYMENT_BUCKET,
+            Key=f'builds/{merged_commit_sha}',
+        ),
     )
-    with open(repacked_archive, 'rb') as f:
-        s3_client.put_object(Body=f, **params)
 
     repo.create_tag(
         new_tag_name,
@@ -191,7 +169,6 @@ def create_release_tag_and_upload_s3_archive(repo_id):
         tagger='',
         lightweight=True,
     )
-    post_slack_message('Deployment release has been created')
 
 
 def verify_signature(request):
