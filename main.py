@@ -142,12 +142,6 @@ def create_release_tag_and_upload_s3_archive(repo_id):
         f'merged_commit_sha={merged_commit_sha}'
     )
 
-    if latest_tag.commit.sha == latest_commit.sha:
-        message = 'Latest commit is already tagged'
-        logger.error(message)
-        post_slack_message(message)
-        return
-
     new_tag_name = get_next_release_tag_name(latest_tag.name)
     logger.info(f'new_tag_name={new_tag_name}')
 
@@ -161,14 +155,19 @@ def create_release_tag_and_upload_s3_archive(repo_id):
         ),
     )
 
-    repo.create_tag(
-        new_tag_name,
-        message='',
-        sha=latest_commit.sha,
-        obj_type='commit',
-        tagger='',
-        lightweight=True,
-    )
+    if latest_tag.commit.sha == latest_commit.sha:
+        message = 'Latest commit is already tagged. Skipping tagging'
+        logger.warning(message)
+        post_slack_message(message)
+    else:
+        repo.create_tag(
+            new_tag_name,
+            message='',
+            sha=latest_commit.sha,
+            obj_type='commit',
+            tagger='',
+            lightweight=True,
+        )
 
 
 def verify_signature(request):
