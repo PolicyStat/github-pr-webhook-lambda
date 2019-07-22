@@ -12,9 +12,11 @@ main:
   project_name: github-merged-prs
   runtime: python3.6
   s3_bucket: pstat-zappa-deploys-tpzx4bbln
-  timeout_seconds: 60
+  timeout_seconds: 300
   exclude:
     - .env
     - .deploy
     - .direnv
     - botocore
+    - boto3
+    - s3transfer

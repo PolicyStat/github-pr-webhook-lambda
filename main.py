@@ -37,6 +37,7 @@ def pgp_parser(value):
         return value.replace('\\n', '\n')
 
 
+S3_DEPLOYMENT_BUCKET = env('S3_DEPLOYMENT_BUCKET')
 SNS_TOPIC_ARN = env('SNS_TOPIC_ARN')
 SLACK_API_ENDPOINT = env('SLACK_API_ENDPOINT')
 
@@ -51,6 +52,7 @@ with env.prefixed('GITHUB_'):
     GITHUB_SECRET_TOKEN = env('SECRET_TOKEN')
     GITHUB_API_TOKEN = env('API_TOKEN')
     GITHUB_API_USER = env('API_USER')
+    GITHUB_REPO_CREATE_RELEASE_TAG = env('REPO_CREATE_RELEASE_TAG')
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -90,7 +92,82 @@ def process_event(event):
         post_slack_message(message)
 
     if gh_event_is_merged_pr(event):
+        repo_id = str(event['repository']['id'])
+        if repo_id == GITHUB_REPO_CREATE_RELEASE_TAG:
+            run(create_release_tag_and_upload_s3_archive, [repo_id])
         handle_merged_pr(event)
+
+
+def _get_final_minor_version():
+    s3_client = boto3.client('s3')
+    params = dict(Bucket=S3_DEPLOYMENT_BUCKET, Key='final_minor_version')
+    try:
+        obj = s3_client.get_object(**params)
+    except s3_client.exceptions.ClientError:
+        return
+    return obj['Body'].read().decode('utf-8').strip()
+
+
+def get_next_release_tag_name(tag_name):
+    m = re.match(r'v(\d+)\.(\d+)\.(\d+).*', tag_name.strip())
+    major, minor, patch = [int(v) for v in m.groups()]
+    # TODO - handle major version increase
+    final_minor_version = _get_final_minor_version()
+    if tag_name == final_minor_version:
+        logger.info('Detected that minor version needs to be increased')
+        patch = 0
+        minor += 1
+    else:
+        patch += 1
+    next_tag_name = f'v{major:02}.{minor:02}.{patch:02}'
+    return next_tag_name
+
+
+def create_release_tag_and_upload_s3_archive(repo_id):
+    gh = github_auth()
+    repo = gh.repository_with_id(repo_id)
+
+    latest_commit = next(repo.commits(number=1))
+    latest_tag = next(repo.tags(number=1))
+
+    # latest_commit is expected to be a merge commit. merge commits always have two parents
+    # the first commit is what the original head was, before the merge
+    # the second commit is the head that was merged in
+    original_head_commit, merged_commit = latest_commit.parents
+    # we don't need to do anything with original_head_commit. It's named so it is known
+    merged_commit_sha = merged_commit['sha']
+
+    logger.info(
+        f'latest_commit={latest_commit.sha} latest_tag={latest_tag.name} '
+        f'merged_commit_sha={merged_commit_sha}'
+    )
+
+    new_tag_name = get_next_release_tag_name(latest_tag.name)
+    logger.info(f'new_tag_name={new_tag_name}')
+
+    s3_client = boto3.client('s3')
+    s3_client.copy_object(
+        Bucket=S3_DEPLOYMENT_BUCKET,
+        Key=f'releases/{new_tag_name}',
+        CopySource=dict(
+            Bucket=S3_DEPLOYMENT_BUCKET,
+            Key=f'builds/{merged_commit_sha}',
+        ),
+    )
+
+    if latest_tag.commit.sha == latest_commit.sha:
+        message = 'Latest commit is already tagged. Skipping tagging'
+        logger.warning(message)
+        post_slack_message(message)
+    else:
+        repo.create_tag(
+            new_tag_name,
+            message='',
+            sha=latest_commit.sha,
+            obj_type='commit',
+            tagger='',
+            lightweight=True,
+        )
 
 
 def verify_signature(request):
@@ -122,7 +199,7 @@ def gh_event_is_merged_pr(event):
 
 
 def get_contributors(repo_owner, repo_name, pr_num):
-    gh = github3.login(GITHUB_API_USER, GITHUB_API_TOKEN)
+    gh = github_auth()
     pr = gh.pull_request(repo_owner, repo_name, pr_num)
     contributors = set()
     commits = list(pr.commits())
@@ -291,6 +368,14 @@ def create_pr_action_message(event):
         f'<{repo_url}|{repo_name}>: {pr_title}'
     )
     return message
+
+
+def github_auth():
+    return github3.login(GITHUB_API_USER, GITHUB_API_TOKEN)
+
+
+def test_create_release():
+    create_release_tag_and_upload_s3_archive(GITHUB_REPO_CREATE_RELEASE_TAG)
 
 
 def test_message():
