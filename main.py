@@ -113,8 +113,6 @@ def _get_final_minor_version():
 def get_next_release_tag_name(tag_name):
     m = re.match(r'v(\d+)\.(\d+)\.(\d+).*', tag_name.strip())
     major, minor, patch = [int(v) for v in m.groups()]
-    # TODO - handle major version increase
-    final_minor_version = _get_final_minor_version()
     if INCREMENT_MAJOR:
         logger.info('Detected that MAJOR version needs to be increased')
         major += 1
