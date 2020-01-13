@@ -54,6 +54,8 @@ with env.prefixed('GITHUB_'):
     GITHUB_API_USER = env('API_USER')
     GITHUB_REPO_CREATE_RELEASE_TAG = env('REPO_CREATE_RELEASE_TAG')
 
+INCREMENT_MAJOR = env.bool('INCREMENT_MAJOR', False)
+
 
 @app.route('/', methods=['GET', 'POST'])
 def handle_incoming_github_event():
@@ -113,8 +115,12 @@ def get_next_release_tag_name(tag_name):
     major, minor, patch = [int(v) for v in m.groups()]
     # TODO - handle major version increase
     final_minor_version = _get_final_minor_version()
-    if tag_name == final_minor_version:
-        logger.info('Detected that minor version needs to be increased')
+    if INCREMENT_MAJOR:
+        logger.info('Detected that MAJOR version needs to be increased')
+        major += 1
+        patch = minor = 0
+    elif tag_name == _get_final_minor_version():
+        logger.info('Detected that MINOR version needs to be increased')
         patch = 0
         minor += 1
     else:
